@@ -1,122 +1,105 @@
 using System;
+using System.Linq;
 using System.Collections.Generic;
-using System.Numerics;
-using AirDefenseSystem.Core.Models;
 using AirDefenseSystem.Core.Systems;
+using AirDefenseSystem.Core.Models;
 
 namespace AirDefenseSystem.Console.Display
 {
     public class RadarDisplay
     {
-        private readonly RadarSystem _radar;
-        private readonly Dictionary<int, Target> _targets;
-        private const int DISPLAY_WIDTH = 80;
-        private const int DISPLAY_HEIGHT = 24;
-        private const char TARGET_CHAR = '●';
-        private const char RADAR_CHAR = '○';
-        private const char EMPTY_CHAR = '·';
-        private readonly char[,] _displayBuffer;
+        private const int RADAR_SIZE = 21;
+        private const int HALF_SIZE = RADAR_SIZE / 2;
+        private readonly char[,] _radarGrid;
+        private readonly List<string> _targetDetails;
+        private int _updateCount;
 
-        public RadarDisplay(RadarSystem radar, Dictionary<int, Target> targets)
+        public RadarDisplay()
         {
-            _radar = radar;
-            _targets = targets;
-            _displayBuffer = new char[DISPLAY_HEIGHT, DISPLAY_WIDTH];
-            System.Console.SetWindowSize(DISPLAY_WIDTH + 1, DISPLAY_HEIGHT + 10);
-            System.Console.SetBufferSize(DISPLAY_WIDTH + 1, DISPLAY_HEIGHT + 10);
+            _radarGrid = new char[RADAR_SIZE, RADAR_SIZE];
+            _targetDetails = new List<string>();
+            _updateCount = 0;
+            System.Console.CursorVisible = false;
         }
 
-        public void Update()
+        public void Update(AirDefenseSystem.Core.Systems.AirDefenseSystem system)
         {
-            // Wyczyść bufor
-            for (int y = 0; y < DISPLAY_HEIGHT; y++)
+            var radar = system.Radar;
+            var readings = radar.ScanAsync(system.Targets).Result;
+
+            // Resetowanie siatki
+            for (int y = 0; y < RADAR_SIZE; y++)
+                for (int x = 0; x < RADAR_SIZE; x++)
+                    _radarGrid[y, x] = '.';
+
+            // Umieszczenie radaru w środku
+            _radarGrid[HALF_SIZE, HALF_SIZE] = 'R';
+
+            // Umieszczenie celów na siatce
+            foreach (var reading in readings)
             {
-                for (int x = 0; x < DISPLAY_WIDTH; x++)
+                var target = radar.GetTarget(reading.TargetId);
+                if (target != null)
                 {
-                    _displayBuffer[y, x] = ' ';
+                    int gridX = (int)((target.Position.X / radar.Range) * HALF_SIZE) + HALF_SIZE;
+                    int gridY = (int)((target.Position.Z / radar.Range) * HALF_SIZE) + HALF_SIZE;
+                    if (gridX >= 0 && gridX < RADAR_SIZE && gridY >= 0 && gridY < RADAR_SIZE)
+                    {
+                        if (target.IsDestroyed)
+                            _radarGrid[gridY, gridX] = 'X';
+                        else
+                            _radarGrid[gridY, gridX] = (char)('0' + (reading.TargetId % 10));
+                    }
                 }
             }
 
-            // Rysuj radar w buforze
-            DrawRadarToBuffer();
-            DrawTargetsToBuffer();
-
-            // Wyczyść konsolę i ustaw kursor na początku
-            System.Console.SetCursorPosition(0, 0);
-            System.Console.Clear();
-
-            // Wyświetl zawartość bufora
-            for (int y = 0; y < DISPLAY_HEIGHT; y++)
+            // Aktualizacja szczegółów celów
+            _targetDetails.Clear();
+            foreach (var reading in readings.OrderByDescending(r => r.ThreatLevel))
             {
-                for (int x = 0; x < DISPLAY_WIDTH; x++)
+                var target = radar.GetTarget(reading.TargetId);
+                if (target != null)
                 {
-                    System.Console.Write(_displayBuffer[y, x]);
+                    string approach = reading.PredictedDistance < reading.Distance ? "APPROACHING" : "MOVING AWAY";
+                    string velocity = $"V:({target.Velocity.X:F1}, {target.Velocity.Y:F1}, {target.Velocity.Z:F1})";
+                    string position = $"P:({target.Position.X/1000:F1}, {target.Position.Y/1000:F1}, {target.Position.Z/1000:F1})";
+                    string speed = $"S:{target.Speed:F1}m/s";
+                    
+                    _targetDetails.Add($"Target {reading.TargetId}: {position} {velocity} {speed} " +
+                                    $"Threat={reading.ThreatLevel:F1}%, {approach}");
+                }
+            }
+
+            // Wyświetlenie aktualnego stanu
+            DrawCurrentState();
+            _updateCount++;
+        }
+
+        private void DrawCurrentState()
+        {
+            // Wyświetlenie nagłówka z numerem aktualizacji
+            System.Console.WriteLine($"\nRadar Display #{_updateCount} (R = Radar, 0-9 = Target, X = Destroyed):");
+            
+            // Rysowanie siatki radaru
+            for (int y = 0; y < RADAR_SIZE; y++)
+            {
+                for (int x = 0; x < RADAR_SIZE; x++)
+                {
+                    System.Console.Write(_radarGrid[y, x] + " ");
                 }
                 System.Console.WriteLine();
             }
 
-            // Rysuj legendę
-            DrawLegend();
-        }
-
-        private void DrawRadarToBuffer()
-        {
-            for (int y = 0; y < DISPLAY_HEIGHT; y++)
+            System.Console.WriteLine();
+            
+            // Wyświetlenie szczegółów celów
+            foreach (var detail in _targetDetails)
             {
-                for (int x = 0; x < DISPLAY_WIDTH; x++)
-                {
-                    float dx = (x - DISPLAY_WIDTH / 2) / (float)(DISPLAY_WIDTH / 2);
-                    float dy = (y - DISPLAY_HEIGHT / 2) / (float)(DISPLAY_HEIGHT / 2);
-                    float distance = (float)Math.Sqrt(dx * dx + dy * dy);
-
-                    if (distance <= 1.0f)
-                    {
-                        if (Math.Abs(distance - 0.25f) < 0.02f ||
-                            Math.Abs(distance - 0.5f) < 0.02f ||
-                            Math.Abs(distance - 0.75f) < 0.02f ||
-                            Math.Abs(distance - 1.0f) < 0.02f)
-                        {
-                            _displayBuffer[y, x] = RADAR_CHAR;
-                        }
-                        else
-                        {
-                            _displayBuffer[y, x] = EMPTY_CHAR;
-                        }
-                    }
-                }
+                System.Console.WriteLine(detail);
             }
-        }
 
-        private void DrawTargetsToBuffer()
-        {
-            foreach (var target in _targets.Values)
-            {
-                if (target.IsDestroyed) continue;
-
-                // Konwertuj pozycję 3D na 2D (widok z góry)
-                float x = target.Position.X / _radar.Range;
-                float y = target.Position.Z / _radar.Range; // Używamy Z zamiast Y dla widoku z góry
-
-                // Przekształć współrzędne na ekran
-                int screenX = (int)((x + 1) * DISPLAY_WIDTH / 2);
-                int screenY = (int)((y + 1) * DISPLAY_HEIGHT / 2);
-
-                // Sprawdź czy punkt jest na ekranie
-                if (screenX >= 0 && screenX < DISPLAY_WIDTH && screenY >= 0 && screenY < DISPLAY_HEIGHT)
-                {
-                    _displayBuffer[screenY, screenX] = TARGET_CHAR;
-                }
-            }
-        }
-
-        private void DrawLegend()
-        {
-            System.Console.WriteLine("\nLegenda:");
-            System.Console.WriteLine($"{TARGET_CHAR} - Cel");
-            System.Console.WriteLine($"{RADAR_CHAR} - Okręgi radaru");
-            System.Console.WriteLine($"{EMPTY_CHAR} - Obszar skanowania");
-            System.Console.WriteLine($"Zasięg radaru: {_radar.Range/1000:F1} km");
-            System.Console.WriteLine($"Liczba celów: {_targets.Count}");
+            // Dodanie linii oddzielającej
+            System.Console.WriteLine(new string('-', System.Console.WindowWidth - 1));
         }
     }
 } 

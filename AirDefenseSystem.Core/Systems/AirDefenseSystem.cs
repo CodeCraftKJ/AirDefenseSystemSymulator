@@ -3,133 +3,149 @@ using System.Collections.Generic;
 using System.Numerics;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Linq;
 using AirDefenseSystem.Core.Models;
 using AirDefenseSystem.Core.Utils;
-using System.Linq;
 
 namespace AirDefenseSystem.Core.Systems
 {
-    public class AirDefenseSystem
+    public class AirDefenseSystem : IDisposable
     {
-        private readonly RadarSystem _radar;
         private readonly ILogger _logger;
+        private readonly RadarSystem _radar;
+        private readonly Dictionary<int, Target> _targets;
         private readonly Random _random;
-        private readonly object _targetsLock = new object();
-        private readonly ManualResetEventSlim _updateEvent;
-        private CancellationTokenSource _cancellationTokenSource;
-        private Task _systemTask;
-        private const float SPAWN_CHANCE = 0.7f;
-        private const float HIT_CHANCE = 0.33f;
-        private const int MAX_TARGETS = 20;
+        private readonly CancellationTokenSource _cancellationTokenSource;
+        private bool _isRunning;
+        private int _nextTargetId = 1;
+        private const float HIT_CHANCE = 0.33f; // 33% szans na trafienie
+        private const int MAX_TARGETS = 20; // Maksymalna liczba celów
+        private const float SPAWN_CHANCE = 0.7f; // 70% szans na pojawienie się nowego celu w każdej iteracji
+        private Target _currentlyEngagedTarget;
 
-        public Dictionary<int, Target> Targets { get; } = new Dictionary<int, Target>();
-        public bool IsRunning => _systemTask != null && !_systemTask.IsCompleted;
-        public ManualResetEventSlim UpdateEvent => _updateEvent;
-
-        public AirDefenseSystem(RadarSystem radar, ILogger logger = null)
+        public AirDefenseSystem(ILogger logger)
         {
-            _radar = radar;
-            _logger = logger ?? new ConsoleLogger();
+            _logger = logger;
+            _radar = new RadarSystem(new Vector3(0, 0, 0), 100000); // 100km range
+            _targets = new Dictionary<int, Target>();
             _random = new Random();
-            _updateEvent = new ManualResetEventSlim(false);
+            _cancellationTokenSource = new CancellationTokenSource();
+            _currentlyEngagedTarget = null;
         }
 
-        public async Task StartAsync()
+        public RadarSystem Radar => _radar;
+        public Dictionary<int, Target> Targets => _targets;
+
+        public void Start()
         {
-            if (IsRunning) return;
-
-            _cancellationTokenSource = new CancellationTokenSource();
-            _systemTask = Task.Run(async () =>
-            {
-                try
-                {
-                    while (!_cancellationTokenSource.Token.IsCancellationRequested)
-                    {
-                        await UpdateTargetsAsync();
-                        await ScanAndEngageAsync();
-                        await Task.Delay(1000, _cancellationTokenSource.Token);
-                    }
-                }
-                catch (OperationCanceledException)
-                {
-                    // Normalne zakończenie
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError($"Błąd systemu: {ex.Message}");
-                }
-            }, _cancellationTokenSource.Token);
-
-            await _systemTask;
+            if (_isRunning) return;
+            _isRunning = true;
+            _logger.LogSystemStart(0);
+            Task.Run(async () => await RunSystemLoop(_cancellationTokenSource.Token));
         }
 
         public void Stop()
         {
-            _cancellationTokenSource?.Cancel();
-            _systemTask?.Wait();
-            _updateEvent.Set(); // Upewnij się, że ostatnia aktualizacja jest wyświetlona
+            if (!_isRunning) return;
+            _isRunning = false;
+            _cancellationTokenSource.Cancel();
+            _logger.LogSystemStop();
         }
 
-        private async Task UpdateTargetsAsync()
+        private async Task RunSystemLoop(CancellationToken cancellationToken)
         {
-            // Usuń zniszczone cele
-            lock (_targetsLock)
+            while (!cancellationToken.IsCancellationRequested)
             {
-                var destroyedTargets = Targets.Values.Where(t => t.IsDestroyed).ToList();
-                foreach (var target in destroyedTargets)
+                try
                 {
-                    Targets.Remove(target.Id);
-                }
-            }
+                    // Spawn nowych celów
+                    if (_targets.Count < MAX_TARGETS && _random.NextDouble() < SPAWN_CHANCE)
+                    {
+                        SpawnNewTarget();
+                    }
 
-            // Aktualizuj pozycje celów
-            var updateTasks = new List<Task>();
-            lock (_targetsLock)
-            {
-                foreach (var target in Targets.Values)
-                {
-                    updateTasks.Add(target.UpdatePositionAsync());
-                }
-            }
-            await Task.WhenAll(updateTasks);
+                    // Aktualizacja pozycji celów
+                    var updateTasks = _targets.Values
+                        .Where(t => !t.IsDestroyed)
+                        .Select(target => target.UpdatePositionAsync())
+                        .ToList();
+                    await Task.WhenAll(updateTasks);
 
-            // Sprawdź czy można dodać nowy cel
-            if (_random.NextDouble() < SPAWN_CHANCE && Targets.Count < MAX_TARGETS)
-            {
-                var newTarget = Target.CreateRandom(_radar.Range, 0, 0);
-                lock (_targetsLock)
-                {
-                    Targets[newTarget.Id] = newTarget;
-                }
-            }
+                    // Usuwanie celów, które wyleciały poza zasięg
+                    RemoveOutOfRangeTargets();
 
-            _updateEvent.Set();
+                    // Skanowanie radaru
+                    var readings = await _radar.ScanAsync(_targets);
+                    var priorityTargets = _radar.GetPriorityTargets();
+                    _logger.LogRadarStatus(readings, priorityTargets, _radar);
+
+                    // Angażowanie celów
+                    if (_currentlyEngagedTarget == null || _currentlyEngagedTarget.IsDestroyed)
+                    {
+                        var nextTarget = priorityTargets
+                            .Where(reading => _targets.TryGetValue(reading.TargetId, out var target) && !target.IsDestroyed)
+                            .Select(reading => _targets[reading.TargetId])
+                            .FirstOrDefault();
+
+                        if (nextTarget != null)
+                        {
+                            _currentlyEngagedTarget = nextTarget;
+                            await EngageTargetAsync(nextTarget);
+                        }
+                    }
+
+                    await Task.Delay(1000, cancellationToken);
+                }
+                catch (OperationCanceledException) { break; }
+                catch (Exception ex) { Console.WriteLine($"Error: {ex.Message}"); }
+            }
         }
 
-        private async Task ScanAndEngageAsync()
+        private void SpawnNewTarget()
         {
-            var readings = await _radar.ScanAsync(Targets.Values.ToList());
-            if (readings.Count == 0) return;
+            var target = Target.CreateRandom(_nextTargetId++, 100, 1000, 100000); // 100km spawn range
+            _targets[target.Id] = target;
+            _logger.LogTargetTracking(target);
+        }
 
-            // Wybierz cel do zaatakowania (największy poziom zagrożenia)
-            var targetToEngage = readings
-                .OrderByDescending(r => r.ThreatLevel)
-                .First();
+        private void RemoveOutOfRangeTargets()
+        {
+            var outOfRange = _targets.Values
+                .Where(t => !t.IsDestroyed && Vector3.Distance(_radar.Position, t.Position) > _radar.Range * 1.5f)
+                .ToList();
 
-            _logger.LogEngagementStart(targetToEngage.Target);
+            foreach (var target in outOfRange)
+            {
+                _targets.Remove(target.Id);
+                if (target == _currentlyEngagedTarget)
+                {
+                    _currentlyEngagedTarget = null;
+                }
+                Console.WriteLine($"Target {target.Id} left the area");
+            }
+        }
 
-            // Symulacja strzału
+        private async Task EngageTargetAsync(Target target)
+        {
+            _logger.LogEngagementStart(target);
+            await Task.Delay(2000); // Symulacja czasu potrzebnego na strzał
+
             if (_random.NextDouble() < HIT_CHANCE)
             {
-                targetToEngage.Target.IsDestroyed = true;
-                _logger.LogTargetDestroyed(targetToEngage.Target);
+                target.IsDestroyed = true;
+                _currentlyEngagedTarget = null;
+                _logger.LogTargetDestroyed(target);
             }
             else
             {
-                _logger.LogEngagementMiss(targetToEngage.Target);
+                Console.WriteLine($"Missed target {target.Id}");
             }
+        }
 
-            _updateEvent.Set();
+        public void Dispose()
+        {
+            Stop();
+            _cancellationTokenSource.Dispose();
         }
     }
 } 

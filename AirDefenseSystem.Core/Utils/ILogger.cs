@@ -9,12 +9,9 @@ namespace AirDefenseSystem.Core.Utils
     {
         void LogSystemStart(int targetCount);
         void LogSystemStop();
-        void LogSystemStatus(string status);
         void LogRadarStatus(List<RadarReading> readings, List<RadarReading> priorityTargets, RadarSystem radar);
-        void LogTargetTracking(Target target, string message = "");
+        void LogTargetTracking(Target target);
         void LogEngagementStart(Target target);
         void LogTargetDestroyed(Target target);
-        void LogError(string message);
-        void LogEngagementMiss(Target target);
     }
 } 

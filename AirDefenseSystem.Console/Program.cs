@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Threading;
 using System.Threading.Tasks;
 using AirDefenseSystem.Core.Systems;
 using AirDefenseSystem.Core.Utils;
@@ -10,44 +11,28 @@ namespace AirDefenseSystem.Console
     {
         static async Task Main(string[] args)
         {
-            System.Console.CursorVisible = false;
-            System.Console.Title = "System Obrony Powietrznej";
-
-            var radar = new RadarSystem();
             var logger = new ConsoleLogger();
-            var system = new AirDefenseSystem.Core.Systems.AirDefenseSystem(radar, logger);
-            var display = new RadarDisplay(radar, system.Targets);
+            var system = new AirDefenseSystem.Core.Systems.AirDefenseSystem(logger);
+            var radarDisplay = new RadarDisplay();
+            
+            system.Start();
 
-            System.Console.WriteLine("Inicjalizacja systemu...");
-            System.Console.WriteLine("Naciśnij Enter, aby zakończyć...");
-            System.Console.ReadLine();
+            System.Console.WriteLine("System obrony powietrznej uruchomiony.\nNaciśnij Ctrl+C aby zatrzymać system...\n");
 
-            // Uruchomienie systemu w tle
-            var systemTask = system.StartAsync();
+            var cts = new CancellationTokenSource();
+            System.Console.CancelKeyPress += (s, e) =>
+            {
+                e.Cancel = true;
+                cts.Cancel();
+            };
 
-            try
+            while (!cts.IsCancellationRequested)
             {
-                while (!systemTask.IsCompleted)
-                {
-                    // Czekaj na sygnał aktualizacji
-                    system.UpdateEvent.Wait();
-                    
-                    // Aktualizuj wyświetlanie
-                    display.Update();
-                    
-                    // Resetuj sygnał
-                    system.UpdateEvent.Reset();
-                }
+                radarDisplay.Update(system);
+                await Task.Delay(1000);
             }
-            catch (Exception ex)
-            {
-                System.Console.WriteLine($"Błąd: {ex.Message}");
-            }
-            finally
-            {
-                system.Stop();
-                System.Console.CursorVisible = true;
-            }
+
+            system.Stop();
         }
     }
 }
