@@ -21,7 +21,7 @@ Symulator systemu obrony powietrznej w konsoli, który demonstruje śledzenie, o
 
 1. Sklonuj repozytorium:
 ```bash
-git clone https://github.com/twoje-repozytorium/AirDefenseSystem.git
+git clone
 cd AirDefenseSystem
 ```
 

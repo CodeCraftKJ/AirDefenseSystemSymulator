@@ -8,6 +8,9 @@ namespace AirDefenseSystem.Core.Models
     [Serializable]
     public class Target
     {
+        private static int _nextId = 1;
+        private readonly Random _random = new Random();
+
         public int Id { get; }
         public Vector3 Position { get; private set; }
         public Vector3 Velocity { get; private set; }
@@ -26,18 +29,7 @@ namespace AirDefenseSystem.Core.Models
             IsEngaged = false;
             IsDestroyed = false;
             LastRadarReading = DateTime.Now;
-
-            // Inicjalizacja losowego kierunku ruchu
-            var random = new Random();
-            float angle = (float)(random.NextDouble() * 2 * Math.PI);
-            float elevation = (float)(random.NextDouble() * Math.PI / 4); // Maksymalne wznoszenie/opadanie 45 stopni
-            
-            // Konwersja kątów na wektor prędkości
-            Velocity = new Vector3(
-                (float)(Math.Cos(angle) * Math.Cos(elevation) * speed),
-                (float)(Math.Sin(elevation) * speed),
-                (float)(Math.Sin(angle) * Math.Cos(elevation) * speed)
-            );
+            Velocity = Vector3.Zero;
         }
 
         // Programowanie współbieżne: Metoda jest bezpieczna do wywoływania z wielu wątków
@@ -58,21 +50,20 @@ namespace AirDefenseSystem.Core.Models
         }
 
         // Metaprogramowanie: Metoda fabryczna do tworzenia obiektów
-        public static Target CreateRandom(int id, float minSpeed, float maxSpeed, float spawnRange)
+        public static Target CreateRandom(float spawnRange, float minSpeed = 100f, float maxSpeed = 1000f)
         {
             var random = new Random();
-            float speed = minSpeed + (float)(random.NextDouble() * (maxSpeed - minSpeed));
+            var id = _nextId++;
             
-            // Losowa pozycja w sferze o promieniu spawnRange
-            float theta = (float)(random.NextDouble() * 2 * Math.PI);
-            float phi = (float)(random.NextDouble() * Math.PI);
-            float r = (float)(random.NextDouble() * spawnRange);
-
-            Vector3 position = new Vector3(
-                (float)(r * Math.Sin(phi) * Math.Cos(theta)),
-                (float)(r * Math.Sin(phi) * Math.Sin(theta)),
-                (float)(r * Math.Cos(phi))
+            // Losowa pozycja w zasięgu spawnu
+            var position = new Vector3(
+                (float)(random.NextDouble() * spawnRange * 2 - spawnRange),
+                (float)(random.NextDouble() * spawnRange * 2 - spawnRange),
+                (float)(random.NextDouble() * spawnRange * 2 - spawnRange)
             );
+
+            // Losowa prędkość w zakresie
+            var speed = minSpeed + (float)(random.NextDouble() * (maxSpeed - minSpeed));
 
             return new Target(id, position, speed);
         }
@@ -82,32 +73,24 @@ namespace AirDefenseSystem.Core.Models
         {
             if (IsDestroyed) return;
 
-            // Aktualizacja pozycji na podstawie prędkości
-            Position += Velocity * 0.1f; // 0.1s krok czasowy
+            // Symulacja opóźnienia aktualizacji
+            await Task.Delay(100);
 
-            // Symulacja małych zmian kierunku (turbulencje)
-            var random = new Random();
-            if (random.NextDouble() < 0.1) // 10% szans na zmianę kierunku
+            // Losowa zmiana kierunku
+            var newVelocity = new Vector3(
+                (float)(_random.NextDouble() * 2 - 1),
+                (float)(_random.NextDouble() * 2 - 1),
+                (float)(_random.NextDouble() * 2 - 1)
+            );
+
+            // Normalizacja i skalowanie prędkości
+            if (newVelocity != Vector3.Zero)
             {
-                float angleChange = (float)((random.NextDouble() - 0.5) * 0.1); // Maksymalna zmiana 5.7 stopnia
-                float elevationChange = (float)((random.NextDouble() - 0.5) * 0.1);
-
-                // Obliczenie nowego kierunku
-                float currentAngle = (float)Math.Atan2(Velocity.Z, Velocity.X);
-                float currentElevation = (float)Math.Asin(Velocity.Y / Speed);
-
-                float newAngle = currentAngle + angleChange;
-                float newElevation = (float)Math.Clamp(currentElevation + elevationChange, -Math.PI/4, Math.PI/4);
-
-                // Aktualizacja wektora prędkości
-                Velocity = new Vector3(
-                    (float)(Math.Cos(newAngle) * Math.Cos(newElevation) * Speed),
-                    (float)(Math.Sin(newElevation) * Speed),
-                    (float)(Math.Sin(newAngle) * Math.Cos(newElevation) * Speed)
-                );
+                newVelocity = Vector3.Normalize(newVelocity) * Speed;
             }
 
-            await Task.Delay(100); // Symulacja czasu potrzebnego na aktualizację
+            Velocity = newVelocity;
+            Position += Velocity;
         }
     }
 } 
