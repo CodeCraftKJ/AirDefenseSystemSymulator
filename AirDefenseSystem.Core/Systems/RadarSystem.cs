@@ -9,106 +9,61 @@ namespace AirDefenseSystem.Core.Systems
 {
     public class RadarSystem
     {
-        public Vector3 Position { get; }
-        public float Range { get; }
-        private readonly List<RadarReading> _detectedTargets;
-        private readonly object _scanLock = new object();
-        private readonly Dictionary<int, Vector3> _lastPositions = new Dictionary<int, Vector3>();
-        private readonly Dictionary<int, float> _lastDistances = new Dictionary<int, float>();
-        private readonly Dictionary<int, Target> _targets = new Dictionary<int, Target>();
+        private readonly List<Target> _targets;
+        private readonly object _lockObject = new object();
+        private int _nextTargetId = 1;
+        private const int MAX_TARGETS = 5;
+        private const float SPAWN_CHANCE = 0.1f; // 10% szans na pojawienie się nowego celu w każdej iteracji
 
-        public RadarSystem(Vector3 position, float range)
+        public RadarSystem()
         {
-            Position = position;
-            Range = range;
-            _detectedTargets = new List<RadarReading>();
+            _targets = new List<Target>();
         }
 
-        public Target GetTarget(int targetId)
+        public IReadOnlyList<Target> Targets => _targets;
+
+        public void Update()
         {
-            return _targets.TryGetValue(targetId, out var target) ? target : null;
-        }
-
-        public async Task<List<RadarReading>> ScanAsync(Dictionary<int, Target> targets)
-        {
-            _detectedTargets.Clear();
-            _targets.Clear();
-            foreach (var target in targets)
+            lock (_lockObject)
             {
-                _targets[target.Key] = target.Value;
-            }
-
-            var tasks = new List<Task>();
-
-            foreach (var target in targets.Values)
-            {
-                if (target.IsDestroyed) continue;
-                tasks.Add(Task.Run(async () =>
+                // Spawn nowych celów
+                if (_targets.Count < MAX_TARGETS && new Random().NextDouble() < SPAWN_CHANCE)
                 {
-                    var distance = Vector3.Distance(Position, target.Position);
-                    if (distance <= Range)
-                    {
-                        // Obliczanie przewidywanej odległości
-                        float predictedDistance = distance;
-                        if (_lastPositions.ContainsKey(target.Id))
-                        {
-                            var lastPos = _lastPositions[target.Id];
-                            var movement = target.Position - lastPos;
-                            var predictedPosition = target.Position + movement;
-                            predictedDistance = Vector3.Distance(Position, predictedPosition);
-                        }
+                    SpawnNewTarget();
+                }
 
-                        // Obliczanie poziomu zagrożenia
-                        float threatLevel = CalculateThreatLevel(distance, predictedDistance, target.Speed);
+                // Aktualizacja pozycji celów
+                foreach (var target in _targets)
+                {
+                    target.UpdatePosition();
+                }
 
-                        var reading = new RadarReading
-                        {
-                            Distance = distance,
-                            SignalStrength = 100 * (1 - distance / Range),
-                            TargetId = target.Id,
-                            ThreatLevel = threatLevel,
-                            PredictedDistance = predictedDistance
-                        };
-
-                        lock (_scanLock)
-                        {
-                            _detectedTargets.Add(reading);
-                            _lastPositions[target.Id] = target.Position;
-                            _lastDistances[target.Id] = distance;
-                        }
-                    }
-                    await Task.Delay(50);
-                }));
+                // Usuwanie celów, które były zestrzelone przez 4 tury
+                _targets.RemoveAll(t => t.IsDestroyed && t.TurnsAfterDestruction <= 0);
             }
-
-            await Task.WhenAll(tasks);
-            return _detectedTargets;
         }
 
-        private float CalculateThreatLevel(float currentDistance, float predictedDistance, float speed)
+        private void SpawnNewTarget()
         {
-            // Im bliżej, tym większe zagrożenie
-            float distanceThreat = 100 * (1 - currentDistance / Range);
-            
-            // Im szybciej się zbliża, tym większe zagrożenie
-            float approachThreat = 0;
-            if (predictedDistance < currentDistance)
+            var target = Target.CreateRandom(_nextTargetId++);
+            _targets.Add(target);
+        }
+
+        public void DestroyTarget(int targetIndex)
+        {
+            lock (_lockObject)
             {
-                approachThreat = 50 * (currentDistance - predictedDistance) / currentDistance;
+                var targetToDestroy = _targets
+                    .Where(t => !t.IsDestroyed)
+                    .Skip(targetIndex)
+                    .FirstOrDefault();
+
+                if (targetToDestroy != null)
+                {
+                    targetToDestroy.IsDestroyed = true;
+                    targetToDestroy.TurnsAfterDestruction = 4;
+                }
             }
-
-            // Im większa prędkość, tym większe zagrożenie
-            float speedThreat = 50 * (speed / 1000); // Normalizacja prędkości
-
-            return distanceThreat + approachThreat + speedThreat;
-        }
-
-        public List<RadarReading> GetPriorityTargets(float minPriority = 50)
-        {
-            return _detectedTargets
-                .Where(r => r.ThreatLevel >= minPriority)
-                .OrderByDescending(r => r.ThreatLevel)
-                .ToList();
         }
     }
 } 

@@ -31,7 +31,7 @@ namespace AirDefenseSystem.Core.Utils
 
         public void LogEngagementStart(Target target)
         {
-            Console.WriteLine($"Engaging target {target.Id} at speed {target.Speed:F1}m/s");
+            Console.WriteLine($"Engaging target {target.Id} at speed {00000000:F1}m/s");
         }
 
         public void LogTargetDestroyed(Target target)

@@ -1,8 +1,11 @@
 using System;
 using System.Linq;
 using System.Collections.Generic;
+using System.Numerics;
+using System.Threading.Tasks;
 using AirDefenseSystem.Core.Systems;
 using AirDefenseSystem.Core.Models;
+using AirDefenseSystem.Core.Utils;
 
 namespace AirDefenseSystem.Console.Display
 {
@@ -13,6 +16,9 @@ namespace AirDefenseSystem.Console.Display
         private readonly char[,] _radarGrid;
         private readonly List<string> _targetDetails;
         private int _updateCount;
+        private readonly Core.Systems.AirDefenseSystem _airDefenseSystem;
+        private readonly object _lockObject = new object();
+        private bool _isUpdating;
 
         public RadarDisplay()
         {
@@ -20,65 +26,110 @@ namespace AirDefenseSystem.Console.Display
             _targetDetails = new List<string>();
             _updateCount = 0;
             System.Console.CursorVisible = false;
+            System.Console.SetCursorPosition(0, 0);
+
+            // Inicjalizacja systemu obrony powietrznej
+            var logger = new ConsoleLogger();
+            _airDefenseSystem = new Core.Systems.AirDefenseSystem(logger);
+            _airDefenseSystem.Start();
+
+            // Uruchomienie nasłuchiwania klawiszy w tle
+            Task.Run(CheckForTargetDestruction);
         }
 
-        public void Update(AirDefenseSystem.Core.Systems.AirDefenseSystem system)
+        private async Task CheckForTargetDestruction()
         {
-            var radar = system.Radar;
-            var readings = radar.ScanAsync(system.Targets).Result;
-
-            // Resetowanie siatki
-            for (int y = 0; y < RADAR_SIZE; y++)
-                for (int x = 0; x < RADAR_SIZE; x++)
-                    _radarGrid[y, x] = '.';
-
-            // Umieszczenie radaru w środku
-            _radarGrid[HALF_SIZE, HALF_SIZE] = 'R';
-
-            // Umieszczenie celów na siatce
-            foreach (var reading in readings)
+            while (true)
             {
-                var target = radar.GetTarget(reading.TargetId);
-                if (target != null)
+                if (System.Console.KeyAvailable)
                 {
-                    int gridX = (int)((target.Position.X / radar.Range) * HALF_SIZE) + HALF_SIZE;
-                    int gridY = (int)((target.Position.Z / radar.Range) * HALF_SIZE) + HALF_SIZE;
-                    if (gridX >= 0 && gridX < RADAR_SIZE && gridY >= 0 && gridY < RADAR_SIZE)
+                    var key = System.Console.ReadKey(true);
+                    if (char.IsDigit(key.KeyChar))
                     {
-                        if (target.IsDestroyed)
-                            _radarGrid[gridY, gridX] = 'X';
-                        else
-                            _radarGrid[gridY, gridX] = (char)('0' + (reading.TargetId % 10));
+                        int targetIndex = key.KeyChar - '0';
+                        _airDefenseSystem.Radar.DestroyTarget(targetIndex);
+                        System.Console.Beep(1000, 200); // Dźwięk zestrzelenia
                     }
                 }
+                await Task.Delay(50); // Sprawdzanie co 50ms
             }
+        }
 
-            // Aktualizacja szczegółów celów
-            _targetDetails.Clear();
-            foreach (var reading in readings.OrderByDescending(r => r.ThreatLevel))
+        public void Update()
+        {
+            if (_isUpdating) return; // Zabezpieczenie przed równoległymi aktualizacjami
+
+            lock (_lockObject)
             {
-                var target = radar.GetTarget(reading.TargetId);
-                if (target != null)
+                _isUpdating = true;
+                try
                 {
-                    string approach = reading.PredictedDistance < reading.Distance ? "APPROACHING" : "MOVING AWAY";
-                    string velocity = $"V:({target.Velocity.X:F1}, {target.Velocity.Y:F1}, {target.Velocity.Z:F1})";
-                    string position = $"P:({target.Position.X/1000:F1}, {target.Position.Y/1000:F1}, {target.Position.Z/1000:F1})";
-                    string speed = $"S:{target.Speed:F1}m/s";
-                    
-                    _targetDetails.Add($"Target {reading.TargetId}: {position} {velocity} {speed} " +
-                                    $"Threat={reading.ThreatLevel:F1}%, {approach}");
+                    // Resetowanie siatki
+                    for (int y = 0; y < RADAR_SIZE; y++)
+                        for (int x = 0; x < RADAR_SIZE; x++)
+                            _radarGrid[y, x] = '.';
+
+                    // Umieszczenie radaru w środku
+                    _radarGrid[HALF_SIZE, HALF_SIZE] = 'R';
+
+                    // Aktualizacja szczegółów celów
+                    _targetDetails.Clear();
+                    var activeTargets = _airDefenseSystem.Radar.Targets.Where(t => !t.IsDestroyed).ToList();
+                    var destroyedTargets = _airDefenseSystem.Radar.Targets.Where(t => t.IsDestroyed).ToList();
+
+                    // Najpierw wyświetl aktywne cele
+                    foreach (var target in activeTargets)
+                    {
+                        // Umieszczenie celu na siatce
+                        int gridX = (int)((target.Position.X / 100) * HALF_SIZE) + HALF_SIZE;
+                        int gridY = (int)((target.Position.Z / 100) * HALF_SIZE) + HALF_SIZE;
+
+                        if (gridX >= 0 && gridX < RADAR_SIZE && gridY >= 0 && gridY < RADAR_SIZE)
+                        {
+                            _radarGrid[gridY, gridX] = (char)('0' + (target.Id % 10));
+                        }
+
+                        string position = $"P:({target.Position.X:F1}, {target.Position.Y:F1}, {target.Position.Z:F1})";
+                        string velocity = $"V:({target.Velocity.X:F1}, {target.Velocity.Y:F1}, {target.Velocity.Z:F1})";
+                        _targetDetails.Add($"Target {target.Id}: {position} {velocity}");
+                    }
+
+                    // Potem wyświetl zestrzelone cele
+                    foreach (var target in destroyedTargets)
+                    {
+                        // Umieszczenie celu na siatce
+                        int gridX = (int)((target.Position.X / 100) * HALF_SIZE) + HALF_SIZE;
+                        int gridY = (int)((target.Position.Z / 100) * HALF_SIZE) + HALF_SIZE;
+
+                        if (gridX >= 0 && gridX < RADAR_SIZE && gridY >= 0 && gridY < RADAR_SIZE)
+                        {
+                            _radarGrid[gridY, gridX] = 'X';
+                        }
+
+                        string position = $"P:({target.Position.X:F1}, {target.Position.Y:F1}, {target.Position.Z:F1})";
+                        string velocity = $"V:({target.Velocity.X:F1}, {target.Velocity.Y:F1}, {target.Velocity.Z:F1})";
+                        _targetDetails.Add($"Target {target.Id}: {position} {velocity} [ZESTRZELONY - zniknie za {target.TurnsAfterDestruction} tur]");
+                    }
+
+                    // Wyświetlenie aktualnego stanu
+                    DrawCurrentState();
+                    _updateCount++;
+                }
+                finally
+                {
+                    _isUpdating = false;
                 }
             }
-
-            // Wyświetlenie aktualnego stanu
-            DrawCurrentState();
-            _updateCount++;
         }
 
         private void DrawCurrentState()
         {
-            // Wyświetlenie nagłówka z numerem aktualizacji
-            System.Console.WriteLine($"\nRadar Display #{_updateCount} (R = Radar, 0-9 = Target, X = Destroyed):");
+            // Ustawienie kursora na początek
+            System.Console.SetCursorPosition(0, 0);
+            
+            // Wyświetlenie nagłówka
+            System.Console.WriteLine($"Radar Display #{_updateCount} (R = Radar, 0-9 = Target, X = Destroyed):");
+            System.Console.WriteLine("Naciśnij cyfrę 0-4 aby zestrzelić cel (0 = pierwszy cel, 1 = drugi cel, itd.)");
             
             // Rysowanie siatki radaru
             for (int y = 0; y < RADAR_SIZE; y++)
@@ -90,16 +141,24 @@ namespace AirDefenseSystem.Console.Display
                 System.Console.WriteLine();
             }
 
-            System.Console.WriteLine();
-            
             // Wyświetlenie szczegółów celów
             foreach (var detail in _targetDetails)
             {
                 System.Console.WriteLine(detail);
             }
+            
+            // Wyczyszczenie pozostałej części ekranu
+            int currentLine = System.Console.CursorTop;
+            while (currentLine < System.Console.WindowHeight - 1)
+            {
+                System.Console.WriteLine(new string(' ', System.Console.WindowWidth - 1));
+                currentLine++;
+            }
+        }
 
-            // Dodanie linii oddzielającej
-            System.Console.WriteLine(new string('-', System.Console.WindowWidth - 1));
+        public void Dispose()
+        {
+            _airDefenseSystem.Dispose();
         }
     }
 } 

@@ -1,8 +1,6 @@
 ﻿using System;
 using System.Threading;
 using System.Threading.Tasks;
-using AirDefenseSystem.Core.Systems;
-using AirDefenseSystem.Core.Utils;
 using AirDefenseSystem.Console.Display;
 
 namespace AirDefenseSystem.Console
@@ -11,13 +9,9 @@ namespace AirDefenseSystem.Console
     {
         static async Task Main(string[] args)
         {
-            var logger = new ConsoleLogger();
-            var system = new AirDefenseSystem.Core.Systems.AirDefenseSystem(logger);
             var radarDisplay = new RadarDisplay();
             
-            system.Start();
-
-            System.Console.WriteLine("System obrony powietrznej uruchomiony.\nNaciśnij Ctrl+C aby zatrzymać system...\n");
+            System.Console.WriteLine("Test wyświetlania radaru.\nNaciśnij Ctrl+C aby zatrzymać...\n");
 
             var cts = new CancellationTokenSource();
             System.Console.CancelKeyPress += (s, e) =>
@@ -28,11 +22,9 @@ namespace AirDefenseSystem.Console
 
             while (!cts.IsCancellationRequested)
             {
-                radarDisplay.Update(system);
-                await Task.Delay(1000);
+                radarDisplay.Update();
+                await Task.Delay(200); // Aktualizacja co 200ms dla płynniejszego ruchu
             }
-
-            system.Stop();
         }
     }
 }
